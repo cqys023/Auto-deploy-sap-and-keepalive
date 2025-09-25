@@ -1,204 +1,141 @@
-name: 自动部署 SAP
+name: 部署 SAP 应用
 
 on:
   workflow_dispatch:
     inputs:
       type:
-        description: '选择部署的节点类型'
+        description: '部署类型'
         required: true
-        default: 'Argo隧道CDN'
+        default: 'ws直连'
         type: choice
         options:
           - ws直连
-          - xhttp直连
-          - Argo隧道CDN
+          - wss中转
       region:
-        description: '选择部署区域'
+        description: '部署区域'
         required: true
         default: 'US(free)'
         type: choice
         options:
-          - SG(free)       # azure新加披
-          - US(free)       # aws美国
+          - SG(free)
+          - US(free)
           - AWS-AU(Sydney)
           - AWS-BR(São Paulo)
-          - AWS-KR(Seoul)
-          - AWS-CA(Montreal)
-          - AWS-US(VA)
-          - AWS-US(OR)
-          - AWS-EU(Frankfurt)
+          - AWS-CA(Toronto)
           - AWS-JP(Tokyo)
-          - AWS-SG(Singapore)
-          - GCP-AU(Sydney)
-          - GCP-BR(São Paulo)
-          - GCP-US(IA)
-          - GCP-EU(Frankfurt)
-          - GCP-JP(Osaka)
-          - GCP-JP(Tokyo)
-          - GCP-IL(Tel Aviv)
-          - GCP-IN(Mumbai)
-          - GCP-KSA(Dammam)
-          - Azure-AU(Sydney)
-          - Azure-BR(São Paulo)
-          - Azure-CA(Montreal)
-          - Azure-US(VA)
-          - Azure-US(WA)
-          - Azure-EU(Netherlands)
-          - Azure-JP(Tokyo)
-          - Azure-SG(Singapore)
-          - Neo-UAE(Dubai)
-          - Neo-KSA(Riyadh)
-      app_name:
-        description: '应用名称（可选，留空则自动生成）'
-        required: false
-        default: ''
-
-env:
-  MEMORY: 256M
-  DISK: 256M
+          - AWS-US(Virginia)
+          - Azure-HK
+          - Azure-US(Virginia)
+          - Azure-DE(Frankfurt)
+          - GCP-US(Lowa)
 
 jobs:
-  deploy-app:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-    - name: Install CF CLI
-      run: |
-        wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
-        echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
-        sudo apt-get update
-        sudo apt-get install -y cf8-cli
+      - name: 设置应用名
+        run: |
+          RANDOM_STR=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 6 | head -n 1)
+          TYPE_SLUG=$(echo "${{ github.event.inputs.type }}" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+          REGION_SLUG=$(echo "${{ github.event.inputs.region }}" | tr -d '() ' | tr '[:upper:]' '[:lower:]')
+          echo "APP_NAME=${TYPE_SLUG}-${REGION_SLUG}-${RANDOM_STR}" >> $GITHUB_ENV
+          echo "生成的应用名: ${TYPE_SLUG}-${REGION_SLUG}-${RANDOM_STR}"
 
-    - name: Configure deployment parameters
-      run: |
-        RANDOM_STR=$(head /dev/urandom | tr -dc 'a-z' | head -c 6)
+      - name: 配置 CF API 地址
+        run: |
+          declare -A CF_APIS=(
+            ["SG(free)"]="https://api.cf.ap21.hana.ondemand.com"
+            ["US(free)"]="https://api.cf.us10-001.hana.ondemand.com"
+            ["AWS-AU(Sydney)"]="https://api.cf.ap10.hana.ondemand.com"
+            ["AWS-BR(São Paulo)"]="https://api.cf.br10.hana.ondemand.com"
+            ["AWS-CA(Toronto)"]="https://api.cf.ca10.hana.ondemand.com"
+            ["AWS-JP(Tokyo)"]="https://api.cf.jp10.hana.ondemand.com"
+            ["AWS-US(Virginia)"]="https://api.cf.us10.hana.ondemand.com"
+            ["Azure-HK"]="https://api.cf.hk10.hana.ondemand.com"
+            ["Azure-US(Virginia)"]="https://api.cf.us20.hana.ondemand.com"
+            ["Azure-DE(Frankfurt)"]="https://api.cf.eu20.hana.ondemand.com"
+            ["GCP-US(Lowa)"]="https://api.cf.us30.hana.ondemand.com"
+          )
 
-        # 区域映射表
-        declare -A CF_API_MAP=(
-          ["SG(free)"]="https://api.cf.ap21.hana.ondemand.com"
-          ["US(free)"]="https://api.cf.us10-001.hana.ondemand.com"
-          ["AWS-AU(Sydney)"]="https://api.cf.ap10.hana.ondemand.com"
-          ["AWS-BR(São Paulo)"]="https://api.cf.br10.hana.ondemand.com"
-          ["AWS-KR(Seoul)"]="https://api.cf.ap12.hana.ondemand.com"
-          ["AWS-CA(Montreal)"]="https://api.cf.ca10.hana.ondemand.com"
-          ["AWS-US(VA)"]="https://api.cf.us10-001.hana.ondemand.com"
-          ["AWS-US(OR)"]="https://api.cf.us11.hana.ondemand.com"
-          ["AWS-EU(Frankfurt)"]="https://api.cf.eu10-005.hana.ondemand.com"
-          ["AWS-JP(Tokyo)"]="https://api.cf.jp10.hana.ondemand.com"
-          ["AWS-SG(Singapore)"]="https://api.cf.ap11.hana.ondemand.com"
-          ["GCP-AU(Sydney)"]="https://api.cf.ap30.hana.ondemand.com"
-          ["GCP-BR(São Paulo)"]="https://api.cf.br30.hana.ondemand.com"
-          ["GCP-US(IA)"]="https://api.cf.us30.hana.ondemand.com"
-          ["GCP-EU(Frankfurt)"]="https://api.cf.eu30.hana.ondemand.com"
-          ["GCP-JP(Osaka)"]="https://api.cf.jp30.hana.ondemand.com"
-          ["GCP-JP(Tokyo)"]="https://api.cf.jp31.hana.ondemand.com"
-          ["GCP-IL(Tel Aviv)"]="https://api.cf.il30.hana.ondemand.com"
-          ["GCP-IN(Mumbai)"]="https://api.cf.in30.hana.ondemand.com"
-          ["GCP-KSA(Dammam)"]="https://api.cf.sa31.hana.ondemand.com"
-          ["Azure-AU(Sydney)"]="https://api.cf.ap20.hana.ondemand.com"
-          ["Azure-BR(São Paulo)"]="https://api.cf.br20.hana.ondemand.com"
-          ["Azure-CA(Montreal)"]="https://api.cf.ca20.hana.ondemand.com"
-          ["Azure-US(VA)"]="https://api.cf.us21.hana.ondemand.com"
-          ["Azure-US(WA)"]="https://api.cf.us20.hana.ondemand.com"
-          ["Azure-EU(Netherlands)"]="https://api.cf.eu20.hana.ondemand.com"
-          ["Azure-JP(Tokyo)"]="https://api.cf.jp20.hana.ondemand.com"
-          ["Azure-SG(Singapore)"]="https://api.cf.ap21.hana.ondemand.com"
-          ["Neo-UAE(Dubai)"]="https://api.cf.neo-ae1.hana.ondemand.com"
-          ["Neo-KSA(Riyadh)"]="https://api.cf.neo-sa1.hana.ondemand.com"
-        )
+          REGION="${{ github.event.inputs.region }}"
+          CF_API="${CF_APIS[$REGION]}"
 
-        REGION="${{ github.event.inputs.region }}"
-        CF_API="${CF_API_MAP[$REGION]}"
-        APP_NAME="${{ github.event.inputs.app_name }}"
-
-        if [ -z "$APP_NAME" ]; then
-          APP_NAME="$(echo "$REGION" | tr '[:upper:]' '[:lower:]' | tr -dc 'a-z')-$RANDOM_STR"
-        fi
-
-        if [[ -n "${{ secrets.DOCKER_IMAGE }}" ]]; then
-          DOCKER_IMAGE="${{ secrets.DOCKER_IMAGE }}"
-        else
-          case "${{ github.event.inputs.type }}" in
-            "ws直连") DOCKER_IMAGE="ghcr.io/eooce/ws:latest" ;;
-            "xhttp直连") DOCKER_IMAGE="ghcr.io/eooce/goxhttp:latest" ;;
-            *) DOCKER_IMAGE="ghcr.io/eooce/nodejs:main" ;;
-          esac
-        fi
-
-        echo "CF_API=$CF_API" >> $GITHUB_ENV
-        echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
-        echo "DOCKER_IMAGE=$DOCKER_IMAGE" >> $GITHUB_ENV
-
-        echo "使用API端点: $CF_API"
-        echo "应用名称: $APP_NAME"
-        echo "部署类型: $DOCKER_IMAGE"
-
-    - name: Login to Cloud Foundry
-      run: |
-        cf login -a ${{ env.CF_API }} -u "${{ secrets.EMAIL }}" -p "${{ secrets.PASSWORD }}" > /dev/null 2>&1
-        ORG=$(cf orgs | awk 'NR==4')
-        SPACE=$(cf spaces | awk 'NR==4')
-        echo "ORG=$ORG" >> $GITHUB_ENV
-        echo "SPACE=$SPACE" >> $GITHUB_ENV
-        cf target -o "$ORG" -s "$SPACE"
-
-    - name: Deploy application
-      run: |
-        if cf push ${{ env.APP_NAME }} --docker-image ${{ env.DOCKER_IMAGE }} -m ${{ env.MEMORY }} -k ${{ env.DISK }} --health-check-type port; then
-          echo "✅ Deployment successful"
-        else
-          cf delete ${{ env.APP_NAME }} -f
-          echo "❌ 资源不足，部署失败，请在早上 8:20~9:00 再尝试部署"
-          exit 1
-        fi
-
-    - name: Set environment variables
-      run: |
-        cf set-env ${{ env.APP_NAME }} NAME "SAP"
-        cf set-env ${{ env.APP_NAME }} UUID "${{ secrets.UUID }}"
-        cf set-env ${{ env.APP_NAME }} NEZHA_SERVER "${{ secrets.NEZHA_SERVER }}"
-        cf set-env ${{ env.APP_NAME }} NEZHA_PORT "${{ secrets.NEZHA_PORT }}"
-        cf set-env ${{ env.APP_NAME }} NEZHA_KEY "${{ secrets.NEZHA_KEY }}"
-        cf set-env ${{ env.APP_NAME }} ARGO_DOMAIN "${{ secrets.ARGO_DOMAIN }}"
-        cf set-env ${{ env.APP_NAME }} ARGO_AUTH "${{ secrets.ARGO_AUTH }}"
-        cf set-env ${{ env.APP_NAME }} SUB_PATH "${{ secrets.SUB_PATH }}"
-        cf set-env ${{ env.APP_NAME }} CFIP "${{ secrets.CFIP || 'cf.877774.xyz' }}"
-        cf set-env ${{ env.APP_NAME }} CFPORT "${{ secrets.CFPORT }}"
-        cf set-env ${{ env.APP_NAME }} CHAT_ID "${{ secrets.CHAT_ID }}"
-        cf set-env ${{ env.APP_NAME }} BOT_TOKEN "${{ secrets.BOT_TOKEN }}"
-
-        if [ -f .env ]; then
-          while IFS= read -r line; do
-            [[ "$line" =~ ^# || -z "$line" ]] && continue
-            IFS='=' read -r key value <<< "$line"
-            cf set-env ${{ env.APP_NAME }} "$key" "$value"
-          done < .env
-        fi
-
-        if [[ "${{ env.DOCKER_IMAGE }}" =~ (xhttp|goxhttp|ws) ]]; then
-          ROUTE=$(cf app ${{ env.APP_NAME }} | awk '/routes:/ {print $2}')
-          if [ -n "$ROUTE" ]; then
-            cf set-env ${{ env.APP_NAME }} DOMAIN "$ROUTE"
-          else
-            echo "⚠️ 未找到应用路由，请手动修改节点配置"
+          if [ -z "$CF_API" ]; then
+            echo "❌ 未识别的区域: $REGION"
+            exit 1
           fi
-        fi
 
-    - name: Restage application
-      run: cf restage ${{ env.APP_NAME }}
+          echo "CF_API=$CF_API" >> $GITHUB_ENV
+          echo "目标 CF API: $CF_API"
 
-    - name: Verify deployment
-      run: cf app ${{ env.APP_NAME }}
+      - name: 安装 CF CLI
+        run: |
+          wget -q -O cf.deb https://packages.cloudfoundry.org/stable?release=debian64&version=v7&source=github
+          sudo dpkg -i cf.deb
 
-    - name: 详细部署信息
-      run: |
-        ROUTE=$(cf app ${{ env.APP_NAME }} | awk '/routes:/ {print $2}')
-        echo "🚀 部署完成！"
-        echo "区域: ${{ github.event.inputs.region }}"
-        echo "组织: ${{ env.ORG }}"
-        echo "空间: ${{ env.SPACE }}"
-        echo "应用名称: ${{ env.APP_NAME }}"
-        echo "应用 URL: ${ROUTE:+https://$ROUTE}"
+      - name: 登录 CF
+        run: |
+          cf login -a ${{ env.CF_API }} \
+            -u "${{ secrets.EMAIL }}" \
+            -p "${{ secrets.PASSWORD }}" \
+            --skip-ssl-validation
+          ORG=$(cf orgs | awk 'NR>3 {print $1; exit}')
+          SPACE=$(cf spaces | awk 'NR>3 {print $1; exit}')
+          cf target -o "$ORG" -s "$SPACE"
+
+      - name: 部署应用
+        run: |
+          set -e
+          echo "🚀 开始部署应用: ${{ env.APP_NAME }}"
+          if ! cf push ${{ env.APP_NAME }} \
+            --docker-image ${{ env.DOCKER_IMAGE }} \
+            -m ${{ env.MEMORY }} -k 256M --health-check-type port --no-start; then
+
+            echo "⚠️ 部署失败，正在收集日志..."
+            cf logs ${{ env.APP_NAME }} --recent || true
+
+            if cf logs ${{ env.APP_NAME }} --recent | grep -qi "insufficient resources"; then
+              echo "❌ 部署失败：当前区域资源不足，可以尝试换个区域，或在早上 8:20~9:00 再部署。"
+            elif cf logs ${{ env.APP_NAME }} --recent | grep -qi "out of memory"; then
+              echo "❌ 部署失败：内存不足，请尝试提高内存（例如 -m 512M -k 512M）。"
+            elif cf logs ${{ env.APP_NAME }} --recent | grep -qi "image"; then
+              echo "❌ 部署失败：Docker 镜像拉取错误，请检查镜像地址是否正确、可访问。"
+            elif cf logs ${{ env.APP_NAME }} --recent | grep -qi "crash"; then
+              echo "❌ 部署失败：应用启动后崩溃，请检查环境变量或启动命令。"
+            else
+              echo "❌ 部署失败：未知原因，可能是区域资源不足。"
+            fi
+
+            cf delete ${{ env.APP_NAME }} -f
+            exit 1
+          fi
+
+      - name: 设置环境变量
+        run: |
+          cf set-env ${{ env.APP_NAME }} NAME "SAP"
+          cf set-env ${{ env.APP_NAME }} UUID "${{ secrets.UUID }}"
+          cf set-env ${{ env.APP_NAME }} NEZHA_SERVER "${{ secrets.NEZHA_SERVER }}"
+          cf set-env ${{ env.APP_NAME }} NEZHA_PORT "${{ secrets.NEZHA_PORT }}"
+          cf set-env ${{ env.APP_NAME }} NEZHA_KEY "${{ secrets.NEZHA_KEY }}"
+
+      - name: 启动应用
+        run: |
+          cf start ${{ env.APP_NAME }}
+          cf restage ${{ env.APP_NAME }}
+          echo "✅ 应用已启动并完成 restage"
+
+      - name: 验证应用状态
+        run: |
+          cf apps | grep ${{ env.APP_NAME }}
+
+      - name: 输出应用信息
+        run: |
+          APP_URL="https://$(cf app ${{ env.APP_NAME }} | grep routes: | awk '{print $2}')"
+          echo "::notice::🚀 部署完成: 应用 ${{ env.APP_NAME }}"
+          echo "::notice::🌐 访问地址: $APP_URL"
+          echo "::notice::📍 区域: ${{ github.event.inputs.region }}"
+          echo "::notice::🔖 部署类型: ${{ github.event.inputs.type }}"
